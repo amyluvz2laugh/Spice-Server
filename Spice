@@ -317,3 +317,13 @@ async function callOpenRouter(systemPrompt, userPrompt, maxTokens) {
 
   throw new Error('All models failed');
 }
+
+// ============================================
+// START SERVER
+// ============================================
+const PORT = process.env.PORT || 3333;
+app.listen(PORT, () => {
+  console.log(`🔥 Spice Muse listening on port ${PORT}`);
+  console.log(`   Models: ${PRIMARY_MODEL}, ${BACKUP_MODEL}, ${TERTIARY_MODEL}`);
+  console.log(`   API Key configured: ${process.env.OPENROUTER_API_KEY ? 'YES ✅' : 'NO ❌'}`);
+});
