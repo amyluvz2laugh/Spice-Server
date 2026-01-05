@@ -1,0 +1,319 @@
+app.post('/spicy-devour', async (req, res) => {
+  try {
+    console.log("🔥 SPICY DEVOUR - Tag search + generation");
+    const startTime = Date.now();
+
+    const {
+      characters,
+      pov,
+      plotDrives,
+      customPrompt,
+      kinkLevel,
+      intensity,
+      taboo,
+      emotionalHeat,
+      manuscriptTitle,
+      currentChapterId,
+      wixApiKey,
+      wixSiteId
+    } = req.body;
+
+    console.log('📋 Generation params:', {
+      characters,
+      pov,
+      kinkLevel,
+      intensity,
+      taboo,
+      emotionalHeat,
+      manuscriptTitle,
+      currentChapterId
+    });
+
+    // Extract @tags and #tags from prompt
+    const atTags = extractTags(customPrompt, '@');
+    const hashTags = extractTags(customPrompt, '#');
+
+    console.log('🔍 Extracted @tags:', atTags);
+    console.log('🔍 Extracted #tags:', hashTags);
+
+    // Search Wix CMS for tag intel
+    let tagIntel = '';
+    for (const tag of atTags) {
+      tagIntel += await searchWixForTag(tag, wixApiKey, wixSiteId);
+    }
+
+    let catalystIntel = '';
+    for (const tag of hashTags) {
+      catalystIntel += await searchWixForTag(tag, wixApiKey, wixSiteId);
+    }
+
+    // Get current chapter content from Wix (using BackupChapters)
+    let currentChapter = '';
+    if (currentChapterId) {
+      currentChapter = await fetchWixChapter(currentChapterId, wixApiKey, wixSiteId);
+    }
+
+    // Get previous chapter from Wix (using BackupChapters)
+    let previousChapter = '';
+    if (currentChapterId && manuscriptTitle) {
+      previousChapter = await fetchWixPreviousChapter(currentChapterId, manuscriptTitle, wixApiKey, wixSiteId);
+    }
+
+    // Build system prompt with all intel
+    const systemPrompt = `You are an unhinged creative writing assistant. Write vivid, engaging prose with strong character voice and emotional depth.
+
+${tagIntel ? `\n=== TAG INTEL ===\n${tagIntel}\n` : ''}
+${catalystIntel ? `\n=== CATALYST INTEL ===\n${catalystIntel}\n` : ''}
+
+Use this intel to guide tone, character voice, and style.`;
+
+    // Build user prompt
+    let userPrompt = '';
+
+    if (currentChapter && currentChapter.trim()) {
+      userPrompt += `=== CURRENT CHAPTER (continue from here) ===\n${currentChapter}\n\n`;
+    } else if (previousChapter) {
+      userPrompt += `=== PREVIOUS CHAPTER ===\n${previousChapter}\n\n`;
+    }
+
+    if (customPrompt) {
+      const clean = customPrompt.replace(/@\w+/g, '').replace(/#\w+/g, '').trim();
+      if (clean) userPrompt += `${clean}\n\n`;
+    }
+
+    if (characters?.length > 0) userPrompt += `Characters: ${characters.join(', ')}\n`;
+    if (pov && pov !== 'Select POV') userPrompt += `POV: ${pov}\n`;
+    if (plotDrives) userPrompt += `Plot: ${plotDrives}\n`;
+
+    userPrompt += `\nKink: ${kinkLevel}/100, Intensity: ${intensity}/100, Taboo: ${taboo}/100, Heat: ${emotionalHeat}/100\n\nWrite 800-1200 words.`;
+
+    console.log('📝 System prompt length:', systemPrompt.length);
+    console.log('📝 User prompt length:', userPrompt.length);
+
+    // Call OpenRouter
+    const result = await callOpenRouter(systemPrompt, userPrompt, 1500);
+
+    const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+    console.log(`✅ Generation complete in ${duration}s`);
+
+    res.json({
+      success: true,
+      content: result,
+      duration: duration
+    });
+
+  } catch (error) {
+    console.error('❌ Spicy Devour Error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Helper: Extract tags from text
+function extractTags(text, symbol) {
+  if (!text) return [];
+  const regex = new RegExp(`\\${symbol}(\\w+)`, 'g');
+  const matches = text.match(regex);
+  if (!matches) return [];
+  return [...new Set(matches.map(tag => tag.substring(1)))];
+}
+
+// Helper: Search Wix CMS for tag (searches Characters AND BackupChapters)
+async function searchWixForTag(tag, apiKey, siteId) {
+  try {
+    console.log('🔍 Searching Wix for tag:', tag);
+    let intel = '';
+
+    // Search Characters collection
+    try {
+      const charResponse = await fetch(`https://www.wixapis.com/v2/sites/${siteId}/data/collections/Characters/items/query`, {
+        method: 'POST',
+        headers: {
+          'Authorization': apiKey,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          filter: {},
+          paging: { limit: 100 }
+        })
+      });
+
+      if (charResponse.ok) {
+        const charData = await charResponse.json();
+        charData.items?.forEach(item => {
+          let found = false;
+          let itemIntel = '';
+
+          Object.keys(item.data).forEach(key => {
+            const value = String(item.data[key] || '');
+            if (value.includes(tag)) {
+              found = true;
+            }
+            if (value) itemIntel += `${value}\n`;
+          });
+
+          if (found) {
+            intel += `\n[${tag} found]:\n${itemIntel}`;
+          }
+        });
+      }
+    } catch (e) {
+      console.log('Characters search error:', e.message);
+    }
+
+    // Search BackupChapters collection
+    try {
+      const chapterResponse = await fetch(`https://www.wixapis.com/v2/sites/${siteId}/data/collections/BackupChapters/items/query`, {
+        method: 'POST',
+        headers: {
+          'Authorization': apiKey,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          filter: {},
+          paging: { limit: 100 }
+        })
+      });
+
+      if (chapterResponse.ok) {
+        const chapterData = await chapterResponse.json();
+        chapterData.items?.forEach(item => {
+          let found = false;
+          let itemIntel = '';
+
+          Object.keys(item.data).forEach(key => {
+            const value = String(item.data[key] || '');
+            if (value.includes(tag)) {
+              found = true;
+            }
+            if (value) itemIntel += `${value}\n`;
+          });
+
+          if (found) {
+            intel += `\n[${tag} found]:\n${itemIntel}`;
+          }
+        });
+      }
+    } catch (e) {
+      console.log('BackupChapters search error:', e.message);
+    }
+
+    console.log(`✅ Found ${intel.length} chars of intel for ${tag}`);
+    return intel;
+
+  } catch (error) {
+    console.error('Error searching Wix for tag:', tag, error);
+    return '';
+  }
+}
+
+// Helper: Fetch current chapter from Wix (BackupChapters collection, chapterContent field)
+async function fetchWixChapter(chapterId, apiKey, siteId) {
+  try {
+    const response = await fetch(`https://www.wixapis.com/v2/sites/${siteId}/data/collections/BackupChapters/items/${chapterId}`, {
+      headers: { 'Authorization': apiKey }
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      return data.item?.data?.chapterContent || '';
+    }
+    return '';
+  } catch (error) {
+    console.error('Error fetching current chapter:', error);
+    return '';
+  }
+}
+
+// Helper: Fetch previous chapter from Wix (BackupChapters, using Stories for manuscript title)
+async function fetchWixPreviousChapter(currentChapterId, manuscriptTitle, apiKey, siteId) {
+  try {
+    // Get current chapter to find order
+    const currentResponse = await fetch(`https://www.wixapis.com/v2/sites/${siteId}/data/collections/BackupChapters/items/${currentChapterId}`, {
+      headers: { 'Authorization': apiKey }
+    });
+
+    if (!currentResponse.ok) return '';
+
+    const currentData = await currentResponse.json();
+    const currentOrder = currentData.item?.data?.order;
+
+    if (!currentOrder) return '';
+
+    // Find previous chapter using Stories collection title field
+    const prevResponse = await fetch(`https://www.wixapis.com/v2/sites/${siteId}/data/collections/BackupChapters/items/query`, {
+      method: 'POST',
+      headers: {
+        'Authorization': apiKey,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        filter: {
+          title: manuscriptTitle,  // Using Stories.title
+          order: currentOrder - 1
+        },
+        paging: { limit: 1 }
+      })
+    });
+
+    if (prevResponse.ok) {
+      const prevData = await prevResponse.json();
+      const content = prevData.items?.[0]?.data?.chapterContent || '';  // Using chapterContent field
+      return content.length > 3000 ? content.substring(content.length - 3000) : content;
+    }
+
+    return '';
+  } catch (error) {
+    console.error('Error fetching previous chapter:', error);
+    return '';
+  }
+}
+
+// Helper: Call OpenRouter
+async function callOpenRouter(systemPrompt, userPrompt, maxTokens) {
+  const models = [
+    "tngtech/tng-r1t-chimera:free",
+    "meta-llama/llama-3.1-70b-instruct",
+    "deepseek/deepseek-chat-v3-0324"
+  ];
+
+  for (const model of models) {
+    try {
+      console.log(`🤖 Trying ${model}`);
+
+      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          'HTTP-Referer': 'https://amygonzalez305.wixsite.com/the-draft-reaper',
+          'X-Title': 'The Draft Reaper'
+        },
+        body: JSON.stringify({
+          model: model,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt }
+          ],
+          max_tokens: maxTokens,
+          temperature: 0.7,
+          top_p: 0.9
+        })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const content = data.choices[0].message.content.trim();
+        console.log(`✅ ${model} succeeded`);
+        return content;
+      }
+
+    } catch (error) {
+      console.log(`⚠️ ${model} failed:`, error.message);
+    }
+  }
+
+  throw new Error('All models failed');
+}
